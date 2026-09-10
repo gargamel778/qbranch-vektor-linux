@@ -1,0 +1,62 @@
+/*
+ * Q-Branch Labs Vektor: power the two soldered USB Wi-Fi radios.
+ *
+ * The Vektor is a private re-layout of the FriendlyELEC NanoPi K1 Plus with two
+ * USB Wi-Fi modules soldered to USB host ports 2 and 3. Their VBUS is gated by
+ * two GPIOs that the stock K1 Plus device tree has no reason to mention --
+ * Armbian's K1 Plus DTS declares only reg_usb0_vbus and carries the comment
+ * "USB Type-A ports' VBUS is always on", which is true of FriendlyELEC's board
+ * and false of this one.
+ *
+ * Left undriven the pins float, and both modules fall off the USB bus at a
+ * random point between roughly 240 and 740 seconds, with nothing in dmesg but a
+ * bare "USB disconnect". PORTSC reads CCS=0: the module is simply unpowered.
+ *
+ * Pin to port mapping, established on hardware by driving PA8 high and PA7 low
+ * and observing which module survived:
+ *
+ *   PA8  vendor label "BL-7601"    MT7601U    (148f:7601)  ehci2 / phy 2
+ *   PA7  vendor label "BL-M7612"   RTL8812BU  (0bda:b812)  ehci3 / phy 3
+ *
+ * Build:   dtc -@ -I dts -O dtb -o sun50i-h5-vektor-radio-vbus.dtbo sun50i-h5-vektor-radio-vbus.dts
+ * Install: copy the .dtbo to /boot/overlay-user/ and set in /boot/armbianEnv.txt:
+ *            user_overlays=sun50i-h5-vektor-radio-vbus
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	fragment@0 {
+		target-path = "/";
+		__overlay__ {
+			reg_vektor_wifi_2g: vektor-wifi-2g-vbus {
+				compatible = "regulator-fixed";
+				regulator-name = "vektor-wifi-2g-vbus";
+				regulator-min-microvolt = <5000000>;
+				regulator-max-microvolt = <5000000>;
+				regulator-always-on;
+				enable-active-high;
+				gpio = <&pio 0 8 0>;	/* PA8, "BL-7601", MT7601U */
+			};
+
+			reg_vektor_wifi_5g: vektor-wifi-5g-vbus {
+				compatible = "regulator-fixed";
+				regulator-name = "vektor-wifi-5g-vbus";
+				regulator-min-microvolt = <5000000>;
+				regulator-max-microvolt = <5000000>;
+				regulator-always-on;
+				enable-active-high;
+				gpio = <&pio 0 7 0>;	/* PA7, "BL-M7612", RTL8812BU */
+			};
+		};
+	};
+
+	fragment@1 {
+		target = <&usbphy>;
+		__overlay__ {
+			usb2_vbus-supply = <&reg_vektor_wifi_2g>;
+			usb3_vbus-supply = <&reg_vektor_wifi_5g>;
+		};
+	};
+};

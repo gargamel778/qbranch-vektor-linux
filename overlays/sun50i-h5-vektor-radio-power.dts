@@ -1,0 +1,34 @@
+/*
+ * Q-Branch Labs Vektor: hold the two soldered USB Wi-Fi radios powered.
+ *
+ * PA7 and PA8 are the enable lines for the two modules. The vendor's 4.19
+ * kernel claims them as "BL-M7612" and "BL-7601" and drives them high. Mainline
+ * has no reason to: this board is a NanoPi K1 Plus derivative, and a real K1
+ * Plus has no soldered radios, so the stock device tree never mentions them.
+ *
+ * Left undriven, both modules fall off the USB bus at a random point between
+ * roughly 240 and 740 seconds. Proven by driving the pins low on a working
+ * kernel, which disconnects both radios within 6 ms, and high again, which
+ * brings both back and rebinds the drivers.
+ *
+ * A gpio-hog is the right mechanism: the pins are claimed and driven when the
+ * gpiochip registers, long before the USB host controllers probe, and no driver
+ * or userspace helper is involved.
+ *
+ * Build:   dtc -@ -I dts -O dtb -o sun50i-h5-vektor-radio-power.dtbo sun50i-h5-vektor-radio-power.dts
+ * Install: copy the .dtbo to /boot/overlay-user/ and add to /boot/armbianEnv.txt:
+ *            user_overlays=sun50i-h5-vektor-radio-power
+ */
+
+/dts-v1/;
+/plugin/;
+
+&pio {
+	vektor_radio_power_hog {
+		gpio-hog;
+		/* <bank pin flags>: bank 0 = PA, flags 0 = active high */
+		gpios = <0 7 0>, <0 8 0>;
+		output-high;
+		line-name = "vektor-radio-power";
+	};
+};
