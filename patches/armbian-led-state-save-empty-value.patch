@@ -1,5 +1,5 @@
---- /usr/lib/armbian/armbian-led-state-save.sh.orig-20260911	2026-08-18 14:31:28.000000000 +0300
-+++ /usr/lib/armbian/armbian-led-state-save.sh	2026-09-11 07:01:00.310531886 +0300
+--- a/usr/lib/armbian/armbian-led-state-save.sh
++++ b/usr/lib/armbian/armbian-led-state-save.sh
 @@ -54,6 +54,10 @@
  		# suppose it contains binary and skip it
  		[[ "$VALUE" =~ [[:cntrl:]] ]] && continue

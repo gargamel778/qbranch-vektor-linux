@@ -173,16 +173,45 @@ later and does not name the LED that caused it:
    armbian-led-state-restore.sh[16621]: Invalid state file, syntax error in configuration file
 ```
 
-The `pattern` trigger exposes two attributes for one underlying pattern: `pattern` (software,
-milliseconds) and `hr_pattern` (hrtimer, microseconds). `pattern_trig_show_patterns()` in
-`drivers/leds/trigger/ledtrig-pattern.c` returns early when asked for the kind that is not currently
-stored, so on a software pattern `hr_pattern` reads back **empty**.
+Since Linux 6.10 the `pattern` trigger stores **one** pattern but exposes it through up to three
+sysfs attributes, selected by an `enum pattern_type`:
+
+| attribute | type | present when |
+|---|---|---|
+| `pattern` | `PATTERN_TYPE_SW` — standard timer | always |
+| `hr_pattern` | `PATTERN_TYPE_HR` — hrtimer | always |
+| `hw_pattern` | `PATTERN_TYPE_HW` — offloaded to the LED controller | only if the driver implements `pattern_set` |
+
+Both software forms take the same `brightness delta_t` list and `delta_t` is in **milliseconds** for
+both — `hr_pattern` is not a finer unit, it is the same unit on a higher-resolution timer
+(`ms_to_ktime()` vs `msecs_to_jiffies()` in `pattern_trig_timer_restart()`).
+
+Only one type is stored at a time, and `pattern_trig_show_patterns()` in
+`drivers/leds/trigger/ledtrig-pattern.c` prints nothing for any other:
+
+```c
+	if (!data->npatterns || data->type != type)
+		goto out;
+```
+
+So on a software pattern, `hr_pattern` reads back **empty** — and since both `pattern` and
+`hr_pattern` are always visible, every pattern-trigger LED has at least one attribute that reads
+empty.
 
 `armbian-led-state-save.sh` writes out every writable attribute unfiltered, skipping only values with
-control characters, so at shutdown it emits `hr_pattern=`. `armbian-led-state-restore.sh` then treats
-an empty value as fatal and `exit 1`s — and because it aborts, **no** LED gets its state restored.
+control characters, so at shutdown it emits `hr_pattern=`. `armbian-led-state-restore.sh` treats an
+empty value as fatal and `exit 1`s.
 
-This is not specific to this board. Any Armbian system with an LED on the `pattern` trigger hits it.
+The restore is a streaming `while read` loop that writes each attribute as it parses it, so the abort
+does not lose everything — it loses **everything from the offending line onward**. On this board the
+first empty value fell in the `pca963x:blue` stanza, so the two `nanopi:*` LEDs and blue's trigger
+were restored and `pca963x:red` was never reached. That is precisely why red was found sitting on
+`trigger=none` with its `panic` trigger unarmed.
+
+This is not specific to this board, but it does need **kernel 6.10 or newer**, which is where
+`hr_pattern` was added. Before that the trigger exposed only `pattern` plus a conditional
+`hw_pattern`, so an LED whose driver has no `pattern_set` — like this one — had nothing that could
+read back empty.
 
 Two layers fix it:
 
@@ -303,6 +332,49 @@ sudo dd if=/dev/mtd0 bs=1 skip=4 count=8                # must print eGON.BT0
 ```
 
 
+## Installing the runtime pieces
+
+Everything under `scripts/` expects to live in `/usr/local/sbin`, and the unit files reference it by
+absolute path. Nothing here is required for the radio fix — that is the overlay alone.
+
+```bash
+# the LED status daemon
+sudo install -m 755 scripts/vektor-status-led.sh /usr/local/sbin/
+sudo install -m 644 scripts/vektor-status-led.service /etc/systemd/system/
+# if your Ethernet interface is not end0:
+sudo systemctl edit vektor-status-led.service     # [Service] / Environment=IFACE=eth0
+
+# make armbian-led-state survive a pattern-trigger LED (see the section above)
+sudo install -m 755 scripts/vektor-led-state-sanitize.sh /usr/local/sbin/
+sudo mkdir -p /etc/systemd/system/armbian-led-state.service.d \
+              /etc/systemd/system/vektor-status-led.service.d
+sudo install -m 644 scripts/systemd/10-vektor-strip-empty-values.conf \
+     /etc/systemd/system/armbian-led-state.service.d/
+sudo install -m 644 scripts/systemd/10-after-led-state.conf \
+     /etc/systemd/system/vektor-status-led.service.d/
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now vektor-status-led.service
+sudo systemctl restart armbian-led-state.service
+
+# optional: the boot self-check and the thermal soak
+sudo install -m 755 scripts/vektor-selfcheck.sh scripts/thermal-test.sh /usr/local/sbin/
+```
+
+The self-check is a plain script, not a unit — run it by hand, or wire it to a
+`systemd` unit or `cron @reboot` if you want it at every boot. It needs root (it reads
+`/sys/kernel/debug/gpio` and `/dev/mtd0`). Both it and `thermal-test.sh` honour `LOG=`, and the
+self-check takes an optional `REQUIRE_MOUNT=/your/data/partition`.
+
+To apply the one-line Armbian patch:
+
+```bash
+sudo patch -p1 -d/ --backup < patches/armbian-led-state-save-empty-value.patch
+```
+
+That file is owned by `armbian-bsp-cli-*` and is not a conffile, so an upgrade silently reverts it.
+The drop-in above is what actually guarantees the fix; the patch just keeps the state file clean.
+
 ## Documentation
 
 - **[docs/hardware.md](docs/hardware.md)** — what is actually on the board, and how it differs from a
@@ -330,8 +402,11 @@ Working: gigabit Ethernet, eMMC, microSD, SPI NOR, USB-A, serial console, both W
 scaling with working thermal throttling, and a U-Boot fallback in SPI NOR.
 
 [`scripts/vektor-selfcheck.sh`](scripts/vektor-selfcheck.sh) checks all of it at boot and fails
-loudly if a kernel or package change silently undoes something. Every assertion in it was proven able
-to fail before being trusted — a check that has only ever passed has not been tested.
+loudly if a kernel or package change silently undoes something. Assertions are proven able to fail
+before being trusted — a check that has only ever passed has not been tested. That review has already
+caught two of its own: the boot-set check passed when all three `/boot` symlinks were *missing*
+(all empty, so the equality held), and the radio check counted USB devices on port 1 of any bus
+rather than the radios themselves.
 
 ## Licensing
 

@@ -201,21 +201,33 @@ fi
 
 So the file contains a key with no value. It was `hr_pattern=`.
 
-That is not corruption — it is generated deterministically. The kernel `pattern` trigger exposes two
-attributes for one underlying pattern, `pattern` (software, ms) and `hr_pattern` (hrtimer, µs), and
-`pattern_trig_show_patterns()` bails out early when asked for the kind that is not stored:
+That is not corruption — it is generated deterministically.
+
+Since Linux 6.10 the `pattern` trigger stores one pattern but exposes it through up to three sysfs
+attributes chosen by an `enum pattern_type`: `pattern` (`PATTERN_TYPE_SW`, standard timer) and
+`hr_pattern` (`PATTERN_TYPE_HR`, hrtimer) are always present, and `hw_pattern` (`PATTERN_TYPE_HW`)
+only when the LED driver implements `pattern_set`. Both software forms take `delta_t` in
+**milliseconds**; `hr_pattern` differs by timer resolution, not by unit
+(`ms_to_ktime()` vs `msecs_to_jiffies()`).
+
+Only one type is stored, and `pattern_trig_show_patterns()` prints nothing for any other:
 
 ```c
-	if (!data->npatterns || (data->is_hw_pattern ^ hardware))
+	if (!data->npatterns || data->type != type)
 		goto out;      /* prints nothing */
 ```
 
 `armbian-led-state-save.sh` dumps every writable attribute, filtering only values containing control
-characters, so it writes `hr_pattern=`. One empty value aborts the entire restore, so no LED is
-restored at all.
+characters, so it writes `hr_pattern=`.
 
-An Armbian bug, not a Vektor one. It surfaced here only because the Ethernet cross-fade is the first
-thing on this board to use the `pattern` trigger.
+The restore is a streaming `while read` loop that writes each attribute as it parses it, so the abort
+loses everything **from the offending line onward**, not everything. Here the first empty value fell
+in the `pca963x:blue` stanza, so the two `nanopi:*` LEDs and blue's trigger were restored and
+`pca963x:red` was never reached — which is exactly why red was later found on `trigger=none`.
+
+An Armbian bug, not a Vektor one, on any kernel from 6.10 (where `hr_pattern` was added). It surfaced
+here only because the Ethernet cross-fade is the first thing on this board to use the `pattern`
+trigger.
 
 ## Two bugs of my own, found on the way
 
@@ -232,6 +244,11 @@ straight into sysfs; the daemon only acted on carrier *transitions*, and the car
 so it never corrected the LED. This is the same mistake as the GPIO sampler earlier in this document —
 watching for a change when the *level* is what matters. Fixed by ordering the units and by having the
 daemon re-assert whenever the LED drifts from what it last wrote.
+
+The first version of that drift check only compared **blue**, so a stomp on green alone still went
+uncorrected — the same bug one channel over. It now compares both, and bounds its own retries: if a
+write does not take, re-asserting every two seconds forever would blank and rewrite both channels at
+0.5 Hz indefinitely, so it backs off after three failures and a carrier change clears the backoff.
 
 ## Testing the tests
 
