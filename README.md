@@ -51,9 +51,18 @@ sudo apt install device-tree-compiler
 dtc -@ -I dts -O dtb -o sun50i-h5-vektor-radio-vbus.dtbo overlays/sun50i-h5-vektor-radio-vbus.dts
 sudo mkdir -p /boot/overlay-user
 sudo cp sun50i-h5-vektor-radio-vbus.dtbo /boot/overlay-user/
-echo 'user_overlays=sun50i-h5-vektor-radio-vbus' | sudo tee -a /boot/armbianEnv.txt
+# armbianEnv.txt takes ONE user_overlays= line, space-separated. Appending a second
+# is silently ignored, so edit in place if the key already exists:
+grep -q '^user_overlays=' /boot/armbianEnv.txt \
+  && sudo sed -i 's/^user_overlays=.*/& sun50i-h5-vektor-radio-vbus/' /boot/armbianEnv.txt \
+  || echo 'user_overlays=sun50i-h5-vektor-radio-vbus' | sudo tee -a /boot/armbianEnv.txt
 sudo reboot
 ```
+
+The same three commands build any of the other overlays — `rgb-led`, `cpufreq`, `eeprom` — just swap
+the filename and add its basename to the same space-separated `user_overlays=` line. The `eeprom` and
+`rgb-led` overlays additionally need their out-of-tree modules (below), and `rgb-led` needs `i2c1` in
+the stock `overlays=` line.
 
 Confirm it took:
 
@@ -67,8 +76,14 @@ Bus 003 Device 002: ID 148f:7601 Ralink Technology, Corp. MT7601U Wireless Adapt
 Bus 004 Device 002: ID 0bda:b812 Realtek Semiconductor Corp. RTL8812BU
 ```
 
-Both radios should now stay put indefinitely. Verified on 6.18.44; the fix is in the device tree, so
-kernel version does not matter.
+Both radios then stay up. The longest run measured for this writeup is **4895 s (1 h 22 m) with zero
+`USB disconnect` events in `dmesg`** — against pre-fix failures at 237-740 s, every time. That soak is
+not itself proof of "forever"; the structural argument is: the pin is now held by a regulator the
+kernel owns, so there is no longer anything to stop driving it. Verified on 6.18.44, and since the fix
+is in the device tree, kernel version does not matter.
+
+If you want to check your own, `dmesg | grep -c 'USB disconnect'` should stay at 0 across an uptime
+comfortably past 740 s.
 
 ### If you cannot use an overlay
 
@@ -105,9 +120,16 @@ Three things are needed, and Armbian ships none of them:
 
    ```bash
    sudo apt install linux-headers-current-sunxi64 build-essential dkms
-   curl -sSLO https://raw.githubusercontent.com/torvalds/linux/v6.18/drivers/leds/leds-pca963x.c
-   # then register it with DKMS so it survives kernel upgrades
+   sudo mkdir -p /usr/src/leds-pca963x-1.0
+   sudo cp scripts/dkms/leds-pca963x/{dkms.conf,Makefile} /usr/src/leds-pca963x-1.0/
+   sudo curl -sSL -o /usr/src/leds-pca963x-1.0/leds-pca963x.c \
+     https://raw.githubusercontent.com/torvalds/linux/v6.18/drivers/leds/leds-pca963x.c
+   sudo dkms add -m leds-pca963x -v 1.0
+   sudo dkms install -m leds-pca963x -v 1.0
    ```
+
+   `AUTOINSTALL="yes"` in the shipped `dkms.conf` is what rebuilds it on every kernel upgrade.
+   Confirm with `dkms status` — it should read `leds-pca963x/1.0, <kernel>, aarch64: installed`.
 3. **The device tree node**: [`overlays/sun50i-h5-vektor-rgb-led.dts`](overlays/sun50i-h5-vektor-rgb-led.dts).
 
 Channel mapping, from the vendor's device tree and confirmed on hardware one channel at a time:
@@ -308,7 +330,9 @@ Three traps worth knowing if you repeat this:
 
 512 bytes at 0x50/0x51 on the same bus as the LED driver. Present, answering, and claimed by nothing,
 because `# CONFIG_EEPROM_AT24 is not set` in Armbian's kernels — the same gap as the LED driver.
-Build `at24` out of tree the same way and apply
+Build `at24` out of tree exactly as for `leds-pca963x` above, using
+[`scripts/dkms/at24/`](scripts/dkms/at24) and
+`https://raw.githubusercontent.com/torvalds/linux/v6.18/drivers/misc/eeprom/at24.c`, then apply
 [`overlays/sun50i-h5-vektor-eeprom.dts`](overlays/sun50i-h5-vektor-eeprom.dts), which declares it
 **read-only** because page 0 already holds a vendor provisioning token.
 
@@ -325,11 +349,33 @@ break a working boot.
 
 ```bash
 sudo apt install mtd-utils
+cat /proc/mtd            # CHECK FIRST - confirm the layout matches before erasing anything
+```
+
+This step erases flash, so verify the partition numbering on your own unit rather than trusting the
+numbers below. On this board:
+
+```
+dev:    size   erasesize  name
+mtd0: 00800000 00001000 "spi0.0"      <- the whole 8 MB chip
+mtd1: 00100000 00001000 "uboot"       <- 1 MB at chip offset 0
+mtd2: 00100000 00001000 "env"         <- the U-Boot environment; leave it alone
+```
+
+`mtd0` is the whole chip, `mtd1` is the `uboot` partition starting at offset 0, and `mtd2` holds the
+U-Boot environment — do not write that one (and never `saveenv` from U-Boot on this board). If your
+`/proc/mtd` differs, stop and work out the mapping first: `flash_erase` on the wrong node destroys the
+fallback you are trying to create.
+
+```bash
 sudo dd if=/dev/mtd0 of=nor-backup.bin bs=64k          # back up all 8 MB first
 sudo flash_erase /dev/mtd1 0 0                          # the "uboot" partition, chip offset 0
 sudo flashcp -v /usr/lib/linux-u-boot-current-nanopik1plus/u-boot-sunxi-with-spl.bin /dev/mtd1
 sudo dd if=/dev/mtd0 bs=1 skip=4 count=8                # must print eGON.BT0
 ```
+
+Because the flash is last in the boot order, a failed write here cannot break a working boot — but a
+`flash_erase` aimed at the wrong device very much can.
 
 
 ## Installing the runtime pieces
