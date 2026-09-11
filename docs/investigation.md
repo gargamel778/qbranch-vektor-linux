@@ -121,3 +121,52 @@ exec 3>/dev/watchdog     # hold the fd open, never feed it; 16 s timeout
 ```
 
 Worth knowing on any headless Allwinner board where `reboot` sometimes wedges the machine.
+
+---
+
+# Finding the LED
+
+A shorter hunt than the radios, and a cleaner lesson: the answer was in the vendor's own files the
+whole time.
+
+## Four wrong guesses
+
+Armbian inherits two LED definitions from the real NanoPi K1 Plus, `nanopi:green:status` on PA10 and
+`nanopi:red:pwr` on PL10. The vendor's kernel drove neither of those; it drove **PE0** and **PL3**,
+both exported by its userspace. That looked like a strong lead, so those four pins were driven one at
+a time with everything else dark.
+
+All four were dead. PL3 even had to be freed from the button driver first, since Armbian claims it as
+`sw4` while the vendor put its button on PL4.
+
+## What actually found it
+
+One grep of the vendor's own application source:
+
+```
+LED_CONTROL_FILE = "/sys/class/leds/pca963x:{}/brightness"
+```
+
+`pca963x` is an NXP I2C LED driver. The LED was never on a GPIO, which is why no pin could light it.
+The vendor's device tree then gave the address, the bus and the channel mapping outright, and their
+settings file even names the colours they used: white for standby, orange for notifications, red for
+failure, yellow while updating.
+
+The lesson is the same one the radios taught, applied earlier: **diff against the working system
+before probing.** Two greps of harvested vendor material beat an hour of driving pins.
+
+## A bonus finding in the same file
+
+The vendor's device tree also declares this:
+
+```
+leds {
+    compatible = "gpio-leds";
+    pwr    { label = "BL-7601";  default-state = "on"; gpios = <&pio 0 8 0>; };
+    status { label = "BL-M7612"; default-state = "on"; gpios = <&pio 0 7 0>; };
+};
+```
+
+That is PA8 and PA7 — the Wi-Fi radio power enables — implemented as `gpio-leds` purely as a
+convenient way to hold a pin high at boot. Independent confirmation of the radio fix, from the
+vendor's side.

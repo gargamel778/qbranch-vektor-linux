@@ -61,3 +61,32 @@ multimeter here: the SPL enables a pull-up on PA5, so both pins read about 3.3 V
 `SDC0 → EMMC2 → SDC2 → NAND → SPI_NOR → USB FEL`, each step taken only on failure, and the whole
 sequence gated on the UBOOT pin. So a bootable microSD outranks everything and no onboard flash ever
 needs erasing to take control of the board. That is what makes this device safe to experiment with.
+
+## The front-panel RGB LED
+
+Not on a GPIO. An **NXP PCA9633** four-channel I2C PWM LED driver at **0x62 on i2c1**
+(`i2c@1c2b000`), sharing the bus with the AT24C04 EEPROM at 0x50/0x51. Confirmed by scan:
+
+```
+50: 50 51 -- -- ...
+60: -- -- 62 -- ...
+```
+
+Channel mapping, from the vendor device tree and verified on hardware one channel at a time:
+
+| `reg` | PWM register | Colour |
+|---|---|---|
+| 0 | 0x02 | green |
+| 1 | 0x03 | red |
+| 2 | 0x04 | blue |
+| 3 | 0x05 | unused |
+
+⚠️ The node names in the vendor's tree contradict their own `reg` values — `green@1` carries
+`reg = <0x0>` and `red@0` carries `reg = <0x1>`. Trust `reg`.
+
+On mainline the chip is never woken and sits at its power-on default of `MODE1=0x10` (SLEEP set),
+`LEDOUT=0x00` (all outputs off), which is why the LED appears dead.
+
+Armbian's kernels do not build the driver: `# CONFIG_LEDS_PCA963X is not set`, and it is not shipped
+as a module either. It is one self-contained source file and builds cleanly out of tree against
+`linux-headers-current-sunxi64`.

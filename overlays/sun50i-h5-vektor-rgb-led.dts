@@ -1,0 +1,64 @@
+/*
+ * Q-Branch Labs Vektor: the front-panel RGB LED.
+ *
+ * It is not on a GPIO. It is an NXP PCA9633 four-channel I2C PWM LED driver at
+ * address 0x62 on i2c1 (i2c@1c2b000), sharing that bus with the AT24C04 EEPROM
+ * at 0x50/0x51. The stock NanoPi K1 Plus device tree has no reason to mention
+ * it, so on mainline the chip is simply never woken: it sits in its power-on
+ * default of MODE1=0x10, SLEEP set, all outputs off.
+ *
+ * Channel mapping taken from the vendor's own device tree and confirmed on
+ * hardware by lighting channel 0 alone:
+ *
+ *   reg 0 -> green      reg 1 -> red      reg 2 -> blue      reg 3 unused
+ *
+ * nxp,totem-pole matches the chip's power-on MODE2 default of 0x05, which is
+ * the configuration the LED was proven to light in.
+ *
+ * Requires: the i2c1 bus enabled, and the leds-pca963x driver, which Armbian
+ * does not build (CONFIG_LEDS_PCA963X is not set). See the repo README.
+ *
+ * Build:   dtc -@ -I dts -O dtb -o sun50i-h5-vektor-rgb-led.dtbo sun50i-h5-vektor-rgb-led.dts
+ * Install: copy to /boot/overlay-user/ and in /boot/armbianEnv.txt set
+ *            overlays=analog-codec i2c1
+ *            user_overlays=sun50i-h5-vektor-radio-vbus sun50i-h5-vektor-rgb-led
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	fragment@0 {
+		target = <&i2c1>;
+		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			led-controller@62 {
+				compatible = "nxp,pca9633";
+				reg = <0x62>;
+				nxp,totem-pole;
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				led@0 {
+					reg = <0>;
+					label = "green";
+					linux,default-trigger = "none";
+				};
+
+				led@1 {
+					reg = <1>;
+					label = "red";
+					linux,default-trigger = "none";
+				};
+
+				led@2 {
+					reg = <2>;
+					label = "blue";
+					linux,default-trigger = "none";
+				};
+			};
+		};
+	};
+};

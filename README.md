@@ -82,6 +82,89 @@ fix as a `gpio-hog`. It works, but `regulator-fixed` wired to `&usbphy` is the m
 
 ---
 
+## The front-panel RGB LED
+
+Same shape of problem as the radios, different bus. The LED is **not on a GPIO**. It is an
+**NXP PCA9633** four-channel I2C PWM driver at address **0x62 on i2c1** (`i2c@1c2b000`), sharing that
+bus with the AT24C04 EEPROM at 0x50/0x51.
+
+On mainline nothing ever touches it, so it sits in its power-on default forever:
+
+```
+MODE1=0x10   (SLEEP set)      LEDOUT=0x00   (all outputs off)
+```
+
+Three things are needed, and Armbian ships none of them:
+
+1. **The i2c1 bus enabled.** Armbian has a stock overlay: add `i2c1` to `overlays=` in
+   `/boot/armbianEnv.txt`.
+2. **The driver.** `CONFIG_LEDS_PCA963X is not set` in Armbian's sunxi64 kernels, and it is not
+   built as a module either. It is a single self-contained file, so build it out of tree:
+
+   ```bash
+   sudo apt install linux-headers-current-sunxi64 build-essential dkms
+   curl -sSLO https://raw.githubusercontent.com/torvalds/linux/v6.18/drivers/leds/leds-pca963x.c
+   # then register it with DKMS so it survives kernel upgrades - see scripts/ and the notes below
+   ```
+3. **The device tree node**: [`overlays/sun50i-h5-vektor-rgb-led.dts`](overlays/sun50i-h5-vektor-rgb-led.dts).
+
+Channel mapping, from the vendor's device tree and confirmed on hardware one channel at a time:
+
+| `reg` | PWM register | Colour |
+|---|---|---|
+| 0 | 0x02 | green |
+| 1 | 0x03 | red |
+| 2 | 0x04 | blue |
+| 3 | 0x05 | unused |
+
+The node names in the vendor's own tree are misleading, `green@1` carries `reg = <0x0>` and `red@0`
+carries `reg = <0x1>`. The `reg` values are the authoritative ones.
+
+Once installed you get ordinary LED class devices:
+
+```
+/sys/class/leds/pca963x:green
+/sys/class/leds/pca963x:red
+/sys/class/leds/pca963x:blue
+```
+
+### Proving it in thirty seconds, before building anything
+
+With just `i2c-tools` and the bus enabled, the chip can be driven by hand. This is worth doing first:
+
+```bash
+sudo i2cdetect -y -r 1          # expect 0x50, 0x51 (EEPROM) and 0x62 (PCA9633)
+sudo i2cset -y 1 0x62 0x00 0x00 # MODE1: clear SLEEP
+sudo i2cset -y 1 0x62 0x08 0xAA # LEDOUT: all four channels to individual PWM
+sudo i2cset -y 1 0x62 0x03 0xFF # PWM1 full -> red
+```
+
+
+### Using it
+
+[`scripts/vektor-status-led.sh`](scripts/vektor-status-led.sh) with
+[`scripts/vektor-status-led.service`](scripts/vektor-status-led.service) gives:
+
+| Colour | Meaning | Driven by |
+|---|---|---|
+| blue breathing | running, link up | kernel `pattern` trigger |
+| blue and green cross-fading | Ethernet link down | kernel `pattern` trigger, complementary ramps |
+| red solid | kernel panic | kernel `panic` trigger |
+
+Everything is a kernel trigger, so the daemon only polls the carrier every couple of seconds and
+does no work otherwise. The two channels of the cross-fade use complementary ramps of the same
+period rather than two `timer` triggers, which would free-run on their own phases and drift into
+being lit together; measured, the two brightnesses sum to 255 throughout and stayed that way over
+40 seconds.
+
+Red is deliberately left to the kernel `panic` trigger, so it lights even when userspace is already
+dead, which is the one failure a daemon can never report.
+
+Other triggers this board exposes, all kernel-native and needing no code: per-radio `phy0*` and
+`phy1*` for association and traffic, `mdio_mux-0.2:00:link` and `:1Gbps` from the Ethernet PHY, and
+`mmc0`/`mmc1`/`mmc2` for storage activity. Each channel takes one trigger at a time.
+
+
 ## Documentation
 
 - **[docs/hardware.md](docs/hardware.md)** — what is actually on the board, and how it differs from a
@@ -105,7 +188,10 @@ toggle the suspected GPIO and watch `lsusb`.
 ## Status
 
 Working: gigabit Ethernet, eMMC, microSD, SPI NOR, USB-A, serial console, thermal, both Wi-Fi radios
-(2.4 GHz MT7601U, dual-band RTL8812BU), all four cores, 2 GB RAM.
+(2.4 GHz MT7601U, dual-band RTL8812BU), the front-panel RGB LED, all four cores, 2 GB RAM.
+
+[`scripts/vektor-selfcheck.sh`](scripts/vektor-selfcheck.sh) checks all of it at boot and fails
+loudly if a kernel or package change silently undoes something.
 
 ## Contributing
 
