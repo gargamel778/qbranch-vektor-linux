@@ -165,6 +165,63 @@ Other triggers this board exposes, all kernel-native and needing no code: per-ra
 `mmc0`/`mmc1`/`mmc2` for storage activity. Each channel takes one trigger at a time.
 
 
+---
+
+## CPU frequency scaling
+
+Out of the box all four cores sit at whatever U-Boot left them on, 816 MHz, because `cpufreq-dt`
+never probes. The stock device tree gives `cpu0` a `cpu-supply` pointing at a Silergy SY8106A
+regulator on r_i2c at 0x65, and this board does not have that chip: a scan of that bus is empty. The
+regulator never appears, so cpufreq defers forever.
+
+[`overlays/sun50i-h5-vektor-cpufreq.dts`](overlays/sun50i-h5-vektor-cpufreq.dts) gives `cpu0` a
+`regulator-fixed` at 1.1 V describing the rail that actually exists, and disables the phantom chip.
+
+The safety limit then comes from the OPP table rather than from a guess:
+
+| Frequency | Needs | At 1.1 V |
+|---|---|---|
+| 480, 648 MHz | 1.04 V | accepted |
+| 816 MHz | 1.10 V | accepted |
+| 960 MHz and up | 1.20 V+ | rejected |
+
+So the ceiling can never exceed the frequency the board already ran at. If you establish the rail is
+higher, raise the two voltages in the overlay and more operating points appear.
+
+**Thermal throttling needs nothing extra.** `cpu0` already has `#cooling-cells` and the thermal zone
+already carries cooling-maps for its passive trips at 75/80/85/90/95 °C. They activate the moment
+cpufreq exists. Verified by temporarily lowering the first trip to 58 °C, since a four-core load only
+reaches 70.5 °C on an open bench and cannot otherwise throttle at all: cooling states 0, 1 and 2 map
+to 816, 648 and 480 MHz and recover cleanly.
+
+## The AT24C04 EEPROM
+
+512 bytes at 0x50/0x51 on the same bus as the LED driver. Present, answering, and claimed by nothing,
+because `# CONFIG_EEPROM_AT24 is not set` in Armbian's kernels — the same gap as the LED driver.
+Build `at24` out of tree the same way and apply
+[`overlays/sun50i-h5-vektor-eeprom.dts`](overlays/sun50i-h5-vektor-eeprom.dts), which declares it
+**read-only** because page 0 already holds a vendor provisioning token.
+
+It is *not* where the Ethernet MAC lives. The board runs a fabricated locally-administered MAC from
+the device tree; the real one is only recoverable from the vendor's rootfs. Set it with a
+`systemd.link` file rather than in the device tree so it survives kernel and DTB changes.
+
+## SPI NOR as a third boot path
+
+The boot ROM tries SD, then eMMC, then SPI NOR. On a stock unit the flash holds the vendor's 2018
+U-Boot and is never reached. Writing a current U-Boot there gives a fallback if the primary
+bootloader is ever corrupted, and because the flash is last in the boot order, writing it cannot
+break a working boot.
+
+```bash
+sudo apt install mtd-utils
+sudo dd if=/dev/mtd0 of=nor-backup.bin bs=64k          # back up all 8 MB first
+sudo flash_erase /dev/mtd1 0 0                          # the "uboot" partition, chip offset 0
+sudo flashcp -v /usr/lib/linux-u-boot-current-nanopik1plus/u-boot-sunxi-with-spl.bin /dev/mtd1
+sudo dd if=/dev/mtd0 bs=1 skip=4 count=8                # must print eGON.BT0
+```
+
+
 ## Documentation
 
 - **[docs/hardware.md](docs/hardware.md)** — what is actually on the board, and how it differs from a
@@ -187,8 +244,9 @@ toggle the suspected GPIO and watch `lsusb`.
 
 ## Status
 
-Working: gigabit Ethernet, eMMC, microSD, SPI NOR, USB-A, serial console, thermal, both Wi-Fi radios
-(2.4 GHz MT7601U, dual-band RTL8812BU), the front-panel RGB LED, all four cores, 2 GB RAM.
+Working: gigabit Ethernet, eMMC, microSD, SPI NOR, USB-A, serial console, both Wi-Fi radios
+(2.4 GHz MT7601U, dual-band RTL8812BU), the front-panel RGB LED, the AT24C04 EEPROM, CPU frequency
+scaling with working thermal throttling, and a U-Boot fallback in SPI NOR.
 
 [`scripts/vektor-selfcheck.sh`](scripts/vektor-selfcheck.sh) checks all of it at boot and fails
 loudly if a kernel or package change silently undoes something.

@@ -1,0 +1,36 @@
+/*
+ * Q-Branch Labs Vektor: bind the on-board AT24C04 EEPROM.
+ *
+ * 512 bytes at 0x50/0x51 on i2c1, sharing the bus with the PCA9633 LED driver
+ * at 0x62. The stock NanoPi K1 Plus tree does not mention it, so on mainline it
+ * answers on the bus but no driver ever claims it.
+ *
+ * Declared READ-ONLY on purpose. Page 0 already holds a vendor provisioning
+ * token, and nothing is known about what may still depend on it. Drop the
+ * read-only property if you decide to use the chip as board-identity storage.
+ *
+ * Note this is NOT where the Ethernet MAC lives; the board's real MAC is only
+ * found in the vendor's rootfs.
+ *
+ * Gives: /sys/bus/i2c/devices/1-0050/eeprom
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	fragment@0 {
+		target = <&i2c1>;
+		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			eeprom@50 {
+				compatible = "atmel,24c04";
+				reg = <0x50>;
+				pagesize = <16>;
+				read-only;
+			};
+		};
+	};
+};

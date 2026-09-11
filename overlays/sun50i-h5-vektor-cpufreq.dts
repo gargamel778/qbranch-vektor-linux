@@ -1,0 +1,68 @@
+/*
+ * Q-Branch Labs Vektor: enable CPU frequency scaling.
+ *
+ * The stock NanoPi K1 Plus device tree gives cpu0 a cpu-supply pointing at a
+ * Silergy SY8106A regulator on r_i2c at 0x65. This board does not have that
+ * chip -- an i2cdetect of that bus is completely empty -- so the regulator
+ * never probes, cpufreq-dt defers forever, and all four cores sit at whatever
+ * U-Boot left them on, which is 816 MHz.
+ *
+ * The fix is to give cpu0 a fixed regulator describing the rail this board
+ * actually has. Armbian's dummy regulator reports 1.1 V and U-Boot selected
+ * 816 MHz, whose operating point is exactly 1.1 V, which is consistent.
+ *
+ * Declaring 1.1 V fixed also produces the correct safety limit for free,
+ * straight from the OPP table rather than from a hand-picked cap:
+ *
+ *   480 MHz  1.04 V (1.04-1.30)  accepted
+ *   648 MHz  1.04 V (1.04-1.30)  accepted
+ *   816 MHz  1.10 V (1.10-1.30)  accepted
+ *   960 MHz  1.20 V (1.20-1.30)  rejected, 1.1 V is below its minimum
+ *  1008 MHz+ 1.20 V and above    rejected
+ *
+ * So the maximum never exceeds the frequency the board already runs at, and
+ * scaling can only ever reduce power. If you establish that the rail is higher
+ * than 1.1 V, raise the two voltages here and more operating points appear.
+ *
+ * Thermal throttling needs nothing extra: cpu0 already has #cooling-cells and
+ * the thermal zone already carries five cooling-maps binding its passive trips
+ * at 75/80/85/90/95 C to the CPU cooling device. Those activate as soon as
+ * cpufreq exists.
+ *
+ * Build:   dtc -@ -I dts -O dtb -o sun50i-h5-vektor-cpufreq.dtbo sun50i-h5-vektor-cpufreq.dts
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	fragment@0 {
+		target-path = "/";
+		__overlay__ {
+			reg_vdd_cpux_fixed: vdd-cpux-fixed {
+				compatible = "regulator-fixed";
+				regulator-name = "vdd-cpux-fixed";
+				regulator-min-microvolt = <1100000>;
+				regulator-max-microvolt = <1100000>;
+				regulator-always-on;
+				regulator-boot-on;
+			};
+		};
+	};
+
+	/* point cpu0 at the rail that exists instead of the chip that does not */
+	fragment@1 {
+		target = <&cpu0>;
+		__overlay__ {
+			cpu-supply = <&reg_vdd_cpux_fixed>;
+		};
+	};
+
+	/* stop the phantom SY8106A sitting in deferred probe forever */
+	fragment@2 {
+		target = <&reg_vdd_cpux>;
+		__overlay__ {
+			status = "disabled";
+		};
+	};
+};
