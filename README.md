@@ -42,6 +42,126 @@ The fix is a device-tree overlay: [`overlays/sun50i-h5-vektor-radio-vbus.dts`](o
 
 ---
 
+## Try it without touching your unit
+
+This is the safest thing in this repository, and it is worth doing before anything else: **writing
+the SD card changes nothing on the appliance.**
+
+The H5 boot ROM tries SD before eMMC and before SPI NOR, so a bootable card simply outranks whatever
+is already installed. The vendor's bootloader, its rootfs on eMMC, and its U-Boot in SPI NOR are all
+left exactly as they were and remain the fallback. Pull the card and the unit boots the vendor
+firmware again as if nothing happened. You can evaluate every claim below on your own hardware and
+walk away with the appliance bit-for-bit unchanged.
+
+No image from this repository is involved. It is a stock Armbian community build for the NanoPi K1
+Plus, unmodified — stock `sun50i-h5-nanopi-k1-plus.dtb`, stock analog-codec overlay, stock family
+fixup script. Nothing vendor-derived goes on the card.
+
+### 1. Download and verify
+
+The build tested here, which is pinned in Armbian's archive:
+
+```bash
+B=https://dl.armbian.com/nanopik1plus/archive/Armbian_26.8.1_Nanopik1plus_trixie_current_6.18.44_minimal.img.xz
+curl -fLO "$B" && curl -fLO "$B.asc" && curl -fLO "$B.sha"
+```
+
+Check the hash, then the signature. **The hash alone is not enough** — a `.sha` served by the same
+mirror as the image detects corruption, not substitution, and this file becomes your board's
+bootloader:
+
+```bash
+shasum -a 256 -c Armbian_26.8.1_Nanopik1plus_trixie_current_6.18.44_minimal.img.xz.sha
+
+# the image signing key is Armbian's lead maintainer's personal key, and it is
+# NOT the apt repository key (8CFA83D1...) - fetch this exact fingerprint:
+gpg --keyserver hkps://keyserver.ubuntu.com \
+    --recv-keys DF00FAF1C577104B50BF1D0093D6889F9F0E78D5
+gpg --verify Armbian_26.8.1_Nanopik1plus_trixie_current_6.18.44_minimal.img.xz{.asc,}
+```
+
+Expected, and verified for this writeup:
+
+```
+Armbian_26.8.1_Nanopik1plus_trixie_current_6.18.44_minimal.img.xz: OK
+gpg: Good signature from "Igor Pecovnik <igor@armbian.com>"
+gpg: WARNING: This key is not certified with a trusted signature!
+```
+
+That warning is normal and does **not** mean verification failed. It says you have not personally
+established a web-of-trust path to the key — the signature itself is good. `Good signature` is the
+line that matters; `BAD signature` would be the failure.
+
+For reference, the two hashes, since it is easy to compare the wrong one:
+
+| File | Bytes | sha256 |
+|---|---|---|
+| `.img.xz` (what `.sha` covers) | 306,748,160 | `c1f9ad76d457fd74c2fbf1ee77e2c8b3ff3fc5b6e9b786597c84663e1f4267cb` |
+| `.img` (after `unxz`) | 1,535,115,264 | `3aa96a23945dd2c9813762dddcaabc838c4a4c3d3370b7c0917d863c5cfa9509` |
+
+Armbian's non-archive download tracks the newest build, so the filename and both hashes will differ
+from the above. Any recent `Nanopik1plus` image should work; 26.8.1 / kernel 6.18.44 is what was
+tested here.
+
+### 2. Write the card
+
+`dd` to the wrong device destroys it, and this is the only step in this repository that can cost you
+something you care about. Identify the card and confirm it before writing:
+
+```bash
+# macOS - require Internal:No, Removable, and the size you expect
+diskutil list
+diskutil info /dev/diskN | egrep -i 'Device / Media Name|Removable Media|Internal|Disk Size'
+
+# Linux
+lsblk -o NAME,SIZE,TYPE,TRAN,RM,MOUNTPOINTS
+```
+
+Then, with `N` replaced by the number you just confirmed:
+
+```bash
+# macOS - rdiskN (raw) is much faster than diskN
+diskutil unmountDisk /dev/diskN
+xz -dc Armbian_26.8.1_Nanopik1plus_trixie_current_6.18.44_minimal.img.xz \
+  | sudo dd of=/dev/rdiskN bs=4m status=progress
+sync
+
+# Linux
+xz -dc Armbian_26.8.1_Nanopik1plus_trixie_current_6.18.44_minimal.img.xz \
+  | sudo dd of=/dev/sdX bs=4M status=progress conv=fsync
+```
+
+Any card size works — the rootfs auto-resizes on first boot (57 G on the 64 GB card used here).
+
+### 3. Boot it
+
+Insert the card and power on. Nothing else is required: no jumper, no button, no FEL. The unit comes
+up on Ethernet by itself, so you do not need a console at all — but if you want to watch, UART0 is the
+**3-pin** header at the board edge (PA4 = TX, PA5 = RX, 115200 8N1, **3.3 V**). Read
+[docs/hardware.md](docs/hardware.md#buttons-and-headers) first: the pins are not 5 V tolerant, and the
+4-pin JST is a different, still-unidentified header — not the console.
+
+What a correct first boot looks like:
+
+| | Expected |
+|---|---|
+| Boot source | `U-Boot SPL 2026.07_armbian`, then `U-boot loaded from SD` — the card outranking SPI NOR |
+| DRAM | `DRAM: 2048 MiB` — the stock K1 Plus SPL parameters are right for this board |
+| Device tree | stock `sun50i-h5-nanopi-k1-plus.dtb` |
+| Ethernet | `end0`, `Link is Up - 1Gbps/Full`, PHY `mdio_mux-0.2:00` `RTL8211E` |
+| Thermal | reads correctly, 46-52 °C idle (the vendor's 4.19 could not: `failed to read out thermal zone (-110)`) |
+| Rootfs | auto-resized |
+| Wi-Fi | **both radios enumerate, then disappear 4-12 minutes later** |
+
+That last row is the bug this repository is about, and the card is how you reproduce it. `lsusb`
+shows `148f:7601` and `0bda:b812` at first; leave it running and they go, with only a
+`USB disconnect` line in `dmesg`. Once you have seen that, the fix below is a device-tree overlay
+and one reboot.
+
+Everything up to this point is reversible by removing the card.
+
+---
+
 ## Install the fix
 
 On a running Armbian:
