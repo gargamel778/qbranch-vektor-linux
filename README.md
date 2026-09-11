@@ -137,8 +137,10 @@ Any card size works — the rootfs auto-resizes on first boot (57 G on the 64 GB
 
 Insert the card and power on. Nothing else is required: no jumper, no button, no FEL. The unit comes
 up on Ethernet by itself, so you do not need a console at all — but if you want to watch, UART0 is the
-**3-pin** header at the board edge (PA4 = TX, PA5 = RX, 115200 8N1, **3.3 V**). Read
-[docs/hardware.md](docs/hardware.md#buttons-and-headers) first: the pins are not 5 V tolerant, and the
+**3-pin** header just below the W25Q64 SPI flash: **TX, RX, GND left to right** with the board's RJ45,
+USB-A and barrel jack along the left edge, 115200 8N1, **3.3 V**. There is
+[an annotated photo](docs/hardware.md#the-uart0-header) showing exactly which header and which pin.
+Read it first: the pins are not 5 V tolerant, the pitch is ~2.0 mm so DuPont leads do not fit, and the
 4-pin JST is a different, still-unidentified header — not the console.
 
 What a correct first boot looks like:
@@ -718,6 +720,10 @@ Short excerpts of the vendor's device tree, their application source, and kernel
 `docs/` for identification and interoperability analysis only. They are not covered by the MIT grant
 and remain under their original licenses. No vendor rootfs, device tree, application or bootloader
 binary is redistributed here, and none will be.
+
+`docs/img/vektor-uart-header.jpg` is cropped and annotated from an exhibit photograph in the device's
+FCC certification filing (FCC ID `2ASZI-VK02A`, document 4683314), a public regulatory record. It is
+reproduced here to identify a hardware feature of the device, and is not covered by the MIT grant.
 
 `leds-pca963x.c` and `at24.c` are GPL-2.0 kernel sources. This repository does not vendor them — the
 build instructions fetch them from the upstream tree at build time, so they keep their own license.

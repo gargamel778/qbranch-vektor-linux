@@ -45,12 +45,27 @@ on top.
   U-Boot patch polls it and prints `recovery button press 1s.`, but no `recovery*` environment
   variable exists, so whatever it does is compiled in and still unknown.
 - **RESET** grounds ball V6.
-- **3-pin header** is the UART0 console: PA4 = TX, PA5 = RX, 115200 8N1, 3.3 V, at the board edge
-  beside the SPI flash. Silkscreen boxes pin 1. **Pitch is ~2.0 mm, not 2.54 mm**, so standard DuPont
-  leads do not fit.
+- **3-pin header** is the UART0 console: PA4 = TX, PA5 = RX, 115200 8N1, 3.3 V, immediately below the
+  Winbond W25Q64 SPI flash. Silkscreen boxes pin 1. **Pitch is ~2.0 mm, not 2.54 mm**, so standard
+  DuPont leads do not fit. Pinout and location below.
 - **5-pin header** labelled OTG is a micro-USB breakout and is the FEL port.
 - **4-pin JST** is unidentified and unpopulated in shipping units. Its traces run to the same node as
   the POWER button, so a front-panel harness is the best guess.
+
+### The UART0 header
+
+![Vektor PCB, top side with the heatsink removed. An amber box marks the 3-pin UART0 header just
+below the W25Q64 SPI flash; the lower panel zooms in on it with the three pins labelled TX, RX and
+GND from left to right.](img/vektor-uart-header.jpg)
+
+*Orient the board as shown — RJ45, USB-A and the barrel jack all along the left edge. The header then
+reads **TX, RX, GND from left to right**. TX and RX are named from the board's point of view, so wire
+board TX to your adapter's RX and board RX to your adapter's TX.*
+
+*Base photo: FCC ID `2ASZI-VK02A`, exhibit "Internal Photos" (document 4683314, filed 2020-04-09),
+cropped and annotated. The FCC filing is the only published teardown of this device; its schematics
+and block diagram were filed as permanently confidential, so the pinout above comes from the hardware,
+not from the filing.*
 
 ⚠️ The H5's I/O pads are **not 5 V tolerant** — absolute maximum on `VCC-IO` is −0.3 to +3.6 V. Never
 let 5 V reach the 3-pin header, the JST, or any GPIO. And you cannot tell TX from RX with a
