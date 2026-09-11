@@ -10,24 +10,29 @@
 # share a period and are started together, and measure as complementary to
 # within sampling jitter (their brightnesses sum to 255 throughout).
 #
-# Red is deliberately never touched: it belongs to the kernel 'panic' trigger,
-# so it lights solid if the kernel dies, which no userspace daemon could report.
+# Red is armed once with the kernel 'panic' trigger and then never touched, so
+# it lights solid if the kernel dies -- which no userspace daemon could report.
 set -u
 IFACE="${IFACE:-end0}"
 L=/sys/class/leds
 B="$L/pca963x:blue"
 G="$L/pca963x:green"
+R="$L/pca963x:red"
 BREATHE="${BREATHE:-8 1400 200 1400}"   # link up: dim <-> bright blue
 FADE_MS="${FADE_MS:-800}"               # link down: half-cycle of the cross-fade
 
 carrier(){ cat "/sys/class/net/$IFACE/carrier" 2>/dev/null || echo 0; }
 plain(){ for d in "$B" "$G"; do echo none > "$d/trigger"; echo 0 > "$d/brightness"; done; }
 
+# What blue's pattern should read back as, for the drift check below.
+want=""
+
 link_up(){
     plain
     echo pattern > "$B/trigger"
     echo "$BREATHE" > "$B/pattern"
     echo -1 > "$B/repeat"
+    want="$BREATHE"
 }
 
 link_down(){
@@ -37,17 +42,28 @@ link_down(){
     # complementary ramps: as blue rises green falls, and vice versa
     echo "0 $FADE_MS 255 $FADE_MS" > "$B/pattern"
     echo "255 $FADE_MS 0 $FADE_MS" > "$G/pattern"
+    want="0 $FADE_MS 255 $FADE_MS"
 }
+
+# Hand red to the kernel. Nothing else here touches it, and arming it at start
+# rather than relying on armbian-led-state restoring a saved trigger means it is
+# armed on every boot regardless of how the last shutdown went.
+arm_panic(){ echo panic > "$R/trigger" 2>/dev/null || true; }
 
 cleanup(){ plain; exit 0; }
 trap cleanup TERM INT
 
+arm_panic
+
+# Re-assert on drift, not just on carrier transitions. armbian-led-state's
+# restore writes a saved pattern straight into sysfs and would otherwise leave
+# the LED showing a stale state indefinitely, since the carrier never changed.
 state=""
 while :; do
-    if [ "$(carrier)" = "1" ]; then
-        [ "$state" = "up" ]   || { link_up;   state=up; }
-    else
-        [ "$state" = "down" ] || { link_down; state=down; }
+    if [ "$(carrier)" = "1" ]; then now=up; else now=down; fi
+    if [ "$now" != "$state" ] || [ "$(cat "$B/pattern" 2>/dev/null)" != "$want" ]; then
+        if [ "$now" = "up" ]; then link_up; else link_down; fi
+        state="$now"
     fi
     sleep 2
 done

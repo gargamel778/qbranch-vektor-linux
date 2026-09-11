@@ -170,3 +170,101 @@ leds {
 That is PA8 and PA7 — the Wi-Fi radio power enables — implemented as `gpio-leds` purely as a
 convenient way to hold a pin high at boot. Independent confirmation of the radio fix, from the
 vendor's side.
+
+---
+
+# The LED fix broke a service, one reboot later
+
+`armbian-led-state.service` came up failed after the next reboot:
+
+```
+× armbian-led-state.service - Armbian leds state
+   Process: 16621 ExecStart=/usr/lib/armbian/armbian-led-state-restore.sh (code=exited, status=1/FAILURE)
+   armbian-led-state-restore.sh[16621]: Invalid state file, syntax error in configuration file
+```
+
+The message does not say which line, which LED, or which attribute.
+
+## Reading the parser instead of guessing
+
+The restore script rejects a line only here:
+
+```bash
+[[ "$LINE" =~ $REGEX_PARSE ]]
+PARAM=${BASH_REMATCH[1]}
+VALUE=${BASH_REMATCH[2]}
+if [[ -z $PARAM || -z $VALUE ]]; then
+    echo "Invalid state file, syntax error in configuration file "
+    exit 1
+fi
+```
+
+So the file contains a key with no value. It was `hr_pattern=`.
+
+That is not corruption — it is generated deterministically. The kernel `pattern` trigger exposes two
+attributes for one underlying pattern, `pattern` (software, ms) and `hr_pattern` (hrtimer, µs), and
+`pattern_trig_show_patterns()` bails out early when asked for the kind that is not stored:
+
+```c
+	if (!data->npatterns || (data->is_hw_pattern ^ hardware))
+		goto out;      /* prints nothing */
+```
+
+`armbian-led-state-save.sh` dumps every writable attribute, filtering only values containing control
+characters, so it writes `hr_pattern=`. One empty value aborts the entire restore, so no LED is
+restored at all.
+
+An Armbian bug, not a Vektor one. It surfaced here only because the Ethernet cross-fade is the first
+thing on this board to use the `pattern` trigger.
+
+## Two bugs of my own, found on the way
+
+**The comment lied.** The daemon's header read *"Red is deliberately never touched: it belongs to the
+kernel `panic` trigger"* — and nothing in the daemon ever set that trigger. It had been armed by hand
+once, captured into the state file at shutdown, and was only ever coming back through the restore
+that was now failing. Live state was `red trigger=none`: a kernel panic would have gone unsignalled,
+while the documentation said otherwise. Documented intent is not implemented behaviour, and only the
+running system can tell you which you have.
+
+**Watching for an edge again.** Restarting `armbian-led-state` under the running daemon left blue and
+green in the link-*down* cross-fade with the cable plugged in. The restore writes a saved pattern
+straight into sysfs; the daemon only acted on carrier *transitions*, and the carrier had not changed,
+so it never corrected the LED. This is the same mistake as the GPIO sampler earlier in this document —
+watching for a change when the *level* is what matters. Fixed by ordering the units and by having the
+daemon re-assert whenever the LED drifts from what it last wrote.
+
+## Testing the tests
+
+Both new self-check assertions were made to fail before being trusted: `red trigger` forced to `none`,
+and a bad line appended to the state file with `chattr +i` used to defeat the sanitizer so the restore
+genuinely saw it.
+
+```
+FAIL: armbian-led-state is failed - its save script emits an empty hr_pattern= ...
+FAIL: red LED trigger is 'none', not panic - a kernel panic would go unsignalled
+```
+
+That step matters more than it looks. A check that has only ever returned OK has not been tested; it
+has merely been run. Several hours were lost earlier in this project to exactly that — a sampler that
+could not have reported the thing it was watching for.
+
+## Result
+
+After a real reboot, with no manual intervention:
+
+```
+Active: active (exited)
+Process: 458 ExecStartPre=/usr/local/sbin/vektor-led-state-sanitize.sh  (status=0/SUCCESS)
+Process: 483 ExecStart=/usr/lib/armbian/armbian-led-state-restore.sh    (status=0/SUCCESS)
+
+  blue   trigger=pattern  brightness=118  pattern=8 1400 200 1400
+  green  trigger=none     brightness=0
+  red    trigger=panic    brightness=0
+
+0 loaded units listed.        # systemctl --failed
+```
+
+The sanitizer logged nothing on that boot: the shutdown save was already clean, so the one-line fix in
+the save script carried the whole cycle and the `/etc` drop-in stayed an untriggered backstop. That is
+the arrangement worth copying — fix the cause where you can, and put the guarantee somewhere a package
+upgrade cannot reach.

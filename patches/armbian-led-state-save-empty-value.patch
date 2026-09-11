@@ -1,0 +1,13 @@
+--- /usr/lib/armbian/armbian-led-state-save.sh.orig-20260911	2026-08-18 14:31:28.000000000 +0300
++++ /usr/lib/armbian/armbian-led-state-save.sh	2026-09-11 07:01:00.310531886 +0300
+@@ -54,6 +54,10 @@
+ 		# suppose it contains binary and skip it
+ 		[[ "$VALUE" =~ [[:cntrl:]] ]] && continue
+ 
++		# vektor: the pattern trigger reports an empty hr_pattern (or pattern);
++		# an empty value makes armbian-led-state-restore.sh exit 1 at boot.
++		[[ -z "$VALUE" ]] && continue
++
+ 		echo "$PARAM=$VALUE" >> $DESTINATION
+ 
+ 	done

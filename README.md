@@ -73,8 +73,10 @@ kernel version does not matter.
 ### If you cannot use an overlay
 
 [`scripts/radio-power.py`](scripts/radio-power.py) drives the same two pins from userspace via
-`/dev/mem` (needs `iomem=relaxed` on the kernel command line). Useful for confirming the diagnosis in
-thirty seconds before you commit to anything: run it and watch `lsusb`.
+`/dev/mem` (needs `iomem=relaxed` on the kernel command line — this disables `STRICT_DEVMEM`, so add
+it for the diagnostic boot only and then take it back out; the overlay is the permanent fix). Useful
+for confirming the diagnosis in thirty seconds before you commit to anything: run it and watch
+`lsusb`.
 
 [`overlays/sun50i-h5-vektor-radio-power.dts`](overlays/sun50i-h5-vektor-radio-power.dts) is the same
 fix as a `gpio-hog`. It works, but `regulator-fixed` wired to `&usbphy` is the mainline sunxi idiom
@@ -104,7 +106,7 @@ Three things are needed, and Armbian ships none of them:
    ```bash
    sudo apt install linux-headers-current-sunxi64 build-essential dkms
    curl -sSLO https://raw.githubusercontent.com/torvalds/linux/v6.18/drivers/leds/leds-pca963x.c
-   # then register it with DKMS so it survives kernel upgrades - see scripts/ and the notes below
+   # then register it with DKMS so it survives kernel upgrades
    ```
 3. **The device tree node**: [`overlays/sun50i-h5-vektor-rgb-led.dts`](overlays/sun50i-h5-vektor-rgb-led.dts).
 
@@ -157,8 +159,51 @@ period rather than two `timer` triggers, which would free-run on their own phase
 being lit together; measured, the two brightnesses sum to 255 throughout and stayed that way over
 40 seconds.
 
-Red is deliberately left to the kernel `panic` trigger, so it lights even when userspace is already
-dead, which is the one failure a daemon can never report.
+Red is left to the kernel `panic` trigger, so it lights even when userspace is already dead, which is
+the one failure a daemon can never report. The daemon arms it once at start and never touches it
+again — do not rely on `armbian-led-state` restoring it, for the reason in the next section.
+
+### The `pattern` trigger breaks `armbian-led-state` — on any board
+
+Worth knowing before you use the `pattern` trigger on Armbian, because the failure appears one reboot
+later and does not name the LED that caused it:
+
+```
+× armbian-led-state.service - Armbian leds state
+   armbian-led-state-restore.sh[16621]: Invalid state file, syntax error in configuration file
+```
+
+The `pattern` trigger exposes two attributes for one underlying pattern: `pattern` (software,
+milliseconds) and `hr_pattern` (hrtimer, microseconds). `pattern_trig_show_patterns()` in
+`drivers/leds/trigger/ledtrig-pattern.c` returns early when asked for the kind that is not currently
+stored, so on a software pattern `hr_pattern` reads back **empty**.
+
+`armbian-led-state-save.sh` writes out every writable attribute unfiltered, skipping only values with
+control characters, so at shutdown it emits `hr_pattern=`. `armbian-led-state-restore.sh` then treats
+an empty value as fatal and `exit 1`s — and because it aborts, **no** LED gets its state restored.
+
+This is not specific to this board. Any Armbian system with an LED on the `pattern` trigger hits it.
+
+Two layers fix it:
+
+1. [`patches/armbian-led-state-save-empty-value.patch`](patches/armbian-led-state-save-empty-value.patch)
+   — one line, `[[ -z "$VALUE" ]] && continue`, so the empty value is never written. Note that
+   `/usr/lib/armbian/armbian-led-state-save.sh` belongs to `armbian-bsp-cli-*` and is not a conffile,
+   so a package upgrade reverts this silently.
+2. [`scripts/systemd/10-vektor-strip-empty-values.conf`](scripts/systemd/10-vektor-strip-empty-values.conf)
+   — a drop-in under `/etc`, which no package upgrade can touch, running
+   [`scripts/vektor-led-state-sanitize.sh`](scripts/vektor-led-state-sanitize.sh) as `ExecStartPre` to
+   scrub the state file before the restore reads it.
+
+The first keeps the file clean; the second means an upgrade reverting the first changes nothing you
+can observe.
+
+There is a related ordering trap. `armbian-led-state`'s restore writes a saved pattern straight into
+sysfs, so if it runs after your daemon has set the LED, the board shows a stale state indefinitely —
+a daemon watching only for carrier *transitions* never notices, because the carrier never changed.
+Hence [`scripts/systemd/10-after-led-state.conf`](scripts/systemd/10-after-led-state.conf) for
+ordering, and a daemon that re-asserts whenever the LED drifts from what it last wrote. Measured
+recovery after a deliberate stomp: 2 s.
 
 Other triggers this board exposes, all kernel-native and needing no code: per-radio `phy0*` and
 `phy1*` for association and traffic, `mdio_mux-0.2:00:link` and `:1Gbps` from the Ethernet PHY, and
@@ -193,6 +238,42 @@ already carries cooling-maps for its passive trips at 75/80/85/90/95 °C. They a
 cpufreq exists. Verified by temporarily lowering the first trip to 58 °C, since a four-core load only
 reaches 70.5 °C on an open bench and cannot otherwise throttle at all: cooling states 0, 1 and 2 map
 to 816, 648 and 480 MHz and recover cleanly.
+
+### Measured thermals, in the case
+
+A nineteen-minute instrumented run ([`scripts/thermal-test.sh`](scripts/thermal-test.sh)): idle
+settle, a 1-to-4-core ramp, ten minutes sustained, then cool-down.
+
+| Phase | Temp | Frequency | Cooling state |
+|---|---|---|---|
+| Settled idle | 43-45 C | 480 MHz | 0 |
+| 1 core | 48 C | 816 MHz | 0 |
+| 2 cores | 51-53 C | 816 MHz | 0 |
+| 3 cores | 55-58 C | 816 MHz | 0 |
+| 4 cores, sustained | rises to 74-75 C over ~400 s | 816 MHz | 0 |
+| **4 cores, past ~420 s** | **holds 74-75 C** | **cycles 816 / 648 / 480** | **0 / 1 / 2** |
+| 20 s after load ends | 65 C | 480 MHz | 0 |
+
+Throttling engages on its own at the 75 C trip and holds there by cycling all three cooling states.
+Roughly 30 C of headroom remains to the 105 C critical trip.
+
+**The governor responds to the presence of load, not its size.** One busy core reaches 816 MHz within
+fifteen seconds, and four cores do the same. What scales with core count is temperature. The saving
+is entirely at idle, where it drops to the 480 MHz minimum.
+
+Three traps worth knowing if you repeat this:
+
+- **Check the thermal interface first.** An earlier run of this test reported a 70.5 C ceiling. The
+  heatsink had been unbolted for photographs and its pad discarded, so that number described a board
+  with no thermal path at all.
+- **Run long enough to reach steady state.** That same run lasted 150 s. At the equivalent point the
+  proper run reads about 67 C and is still climbing; it does not settle until roughly 400 s. A
+  temperature still rising is not a ceiling.
+- **Rows showing cores at different frequencies are an artifact.** `affected_cpus` is `0 1 2 3` under
+  a single `policy0`, so this SoC cannot run cores at different clocks. Reading the four sysfs files
+  takes about 32 ms, long enough to straddle a transition. The sensor also jitters by about 4 C
+  between consecutive samples.
+
 
 ## The AT24C04 EEPROM
 
@@ -249,7 +330,20 @@ Working: gigabit Ethernet, eMMC, microSD, SPI NOR, USB-A, serial console, both W
 scaling with working thermal throttling, and a U-Boot fallback in SPI NOR.
 
 [`scripts/vektor-selfcheck.sh`](scripts/vektor-selfcheck.sh) checks all of it at boot and fails
-loudly if a kernel or package change silently undoes something.
+loudly if a kernel or package change silently undoes something. Every assertion in it was proven able
+to fail before being trusted — a check that has only ever passed has not been tested.
+
+## Licensing
+
+The overlays, scripts and prose here are MIT, per [LICENSE](LICENSE).
+
+Short excerpts of the vendor's device tree, their application source, and kernel output are quoted in
+`docs/` for identification and interoperability analysis only. They are not covered by the MIT grant
+and remain under their original licenses. No vendor rootfs, device tree, application or bootloader
+binary is redistributed here, and none will be.
+
+`leds-pca963x.c` and `at24.c` are GPL-2.0 kernel sources. This repository does not vendor them — the
+build instructions fetch them from the upstream tree at build time, so they keep their own license.
 
 ## Contributing
 
