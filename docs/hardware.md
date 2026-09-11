@@ -54,18 +54,34 @@ on top.
 
 ### The UART0 header
 
-![Vektor PCB, top side with the heatsink removed. An amber box marks the 3-pin UART0 header just
-below the W25Q64 SPI flash; the lower panel zooms in on it with the three pins labelled TX, RX and
-GND from left to right.](img/vektor-uart-header.jpg)
+The console header is the 3-pin connector immediately below the Winbond W25Q64 SPI flash. It is easy
+to confuse with the 5-pin **OTG** header on the same edge of the board, so the location matters:
 
-*Orient the board as shown — RJ45, USB-A and the barrel jack all along the left edge. The header then
-reads **TX, RX, GND from left to right**. TX and RX are named from the board's point of view, so wire
-board TX to your adapter's RX and board RX to your adapter's TX.*
+![Top side of the Vektor PCB with the heatsink removed. An amber box marks the 3-pin UART0 header,
+sitting just below the W25Q64 SPI flash and above the mounting hole.](img/uart-header-location.jpg)
 
-*Base photo: FCC ID `2ASZI-VK02A`, exhibit "Internal Photos" (document 4683314, filed 2020-04-09),
-cropped and annotated. The FCC filing is the only published teardown of this device; its schematics
-and block diagram were filed as permanently confidential, so the pinout above comes from the hardware,
-not from the filing.*
+Zoomed in, with the board in that same orientation — RJ45, USB-A and the barrel jack all along the
+left edge — the three pins read **TX, RX, GND from left to right**:
+
+![Close-up of the 3-pin UART0 header. The three pins are labelled, left to right, TX, RX and
+GND.](img/uart-header-detail.jpg)
+
+**Connecting to it**
+
+- **115200 8N1**, no flow control.
+- **TX and RX are named from the board's point of view.** Wire board TX to your adapter's RX, and
+  board RX to your adapter's TX. Getting this backwards is the usual reason a first attempt shows
+  nothing; it does no harm, so if the console is silent, swap the two and try again.
+- **3.3 V logic only.** Use a 3.3 V USB-serial adapter. Do not connect the adapter's VCC at all — the
+  board is powered from its own barrel jack, and GND plus the two data lines are all you need.
+- **The pitch is ~2.0 mm, not 2.54 mm**, so standard 0.1" DuPont jumpers will not seat on it. You need
+  a 2.0 mm socket, or to hold fine probes against the pins.
+- Silkscreen boxes pin 1.
+
+Base photo: FCC ID `2ASZI-VK02A`, exhibit "Internal Photos" (document 4683314, filed 2020-04-09),
+cropped and annotated. That filing is the only published teardown of this device; its schematics and
+block diagram were withheld as permanently confidential, so the pinout above comes from the hardware
+rather than from the filing.
 
 ⚠️ The H5's I/O pads are **not 5 V tolerant** — absolute maximum on `VCC-IO` is −0.3 to +3.6 V. Never
 let 5 V reach the 3-pin header, the JST, or any GPIO. And you cannot tell TX from RX with a

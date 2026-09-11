@@ -721,7 +721,7 @@ Short excerpts of the vendor's device tree, their application source, and kernel
 and remain under their original licenses. No vendor rootfs, device tree, application or bootloader
 binary is redistributed here, and none will be.
 
-`docs/img/vektor-uart-header.jpg` is cropped and annotated from an exhibit photograph in the device's
+`docs/img/uart-header-location.jpg` and `docs/img/uart-header-detail.jpg` are cropped and annotated from an exhibit photograph in the device's
 FCC certification filing (FCC ID `2ASZI-VK02A`, document 4683314), a public regulatory record. It is
 reproduced here to identify a hardware feature of the device, and is not covered by the MIT grant.
 
