@@ -27,6 +27,7 @@ D=$(readlink /boot/dtb     | sed 's/^dtb-//')
 N=$(dpkg -l 2>/dev/null | grep -cE "^ii +linux-image-[a-z]+-sunxi64")
 F=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_available_frequencies 2>/dev/null | wc -w)
 MAGIC=$(dd if=/dev/mtd0 bs=1 skip=4 count=8 status=none 2>/dev/null)
+U=$(gpioinfo -c gpiochip0 2>/dev/null | sed -n "s/.*line *3:.*consumer=\(.*\)/\1/p" | tr -d " ")
 S=$(systemctl is-active armbian-led-state.service 2>/dev/null)
 P=$(sed -n 's/.*\[\(.*\)\].*/\1/p' /sys/class/leds/pca963x:red/trigger 2>/dev/null)
 
@@ -37,6 +38,7 @@ P=$(sed -n 's/.*\[\(.*\)\].*/\1/p' /sys/class/leds/pca963x:red/trigger 2>/dev/nu
 [ "${F:-0}" -ge 2 ] || { note "FAIL: CPU scaling unavailable ($F operating points) - check the cpufreq overlay"; fail=1; }
 [ "$S" = "active" ] || { note "FAIL: armbian-led-state is ${S:-absent} - its save script emits an empty hr_pattern= for pattern-trigger LEDs and the restore rejects it; check the sanitize drop-in"; fail=1; }
 [ "$P" = "panic" ] || { note "FAIL: red LED trigger is '${P:-none}', not panic - a kernel panic would go unsignalled"; fail=1; }
+[ "$U" = "vektor-usb-a-vbus" ] || { note "FAIL: PL3 is '${U:-unclaimed}', not the USB-A vbus regulator - the external USB port has no 5V (mainline claims PL3 as the bogus gpio-key sw4)"; fail=1; }
 [ "$MAGIC" = "eGON.BT0" ] || { note "WARN: SPI NOR has no valid bootloader header - the third boot path is gone"; fail=1; }
 # The -n guard matters: with all three symlinks missing, K/I/D are all empty and
 # the equality would hold, so the assertion would pass on a broken /boot.
@@ -44,5 +46,5 @@ P=$(sed -n 's/.*\[\(.*\)\].*/\1/p' /sys/class/leds/pca963x:red/trigger 2>/dev/nu
 [ "${N:-0}" -le 1 ] || { note "WARN: $N kernel branches installed - the initramfs hook will fight over /boot/uInitrd"; fail=1; }
 [ -z "$REQUIRE_MOUNT" ] || findmnt -no TARGET "$REQUIRE_MOUNT" >/dev/null 2>&1 || { note "WARN: $REQUIRE_MOUNT not mounted"; fail=1; }
 
-[ "$fail" = "0" ] && note "OK: radios ${R}/2, LED ${L}/3, gpio ${G}/2, eeprom bound, ${F} cpu freqs, SPI fallback present, led-state active, red armed, boot set consistent on $K"
+[ "$fail" = "0" ] && note "OK: radios ${R}/2, LED ${L}/3, gpio ${G}/2, eeprom bound, ${F} cpu freqs, SPI fallback present, led-state active, red armed, USB-A powered, boot set consistent on $K"
 exit $fail

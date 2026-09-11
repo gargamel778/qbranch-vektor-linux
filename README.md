@@ -221,6 +221,66 @@ fix as a `gpio-hog`. It works, but `regulator-fixed` wired to `&usbphy` is the m
 
 ---
 
+## The USB-A port: a phantom button holding VBUS down
+
+The external USB-A host port enumerates nothing on mainline. Two different devices, hot-plug and
+cold-boot alike, produce a controller that looks perfectly healthy and a port that sees nothing:
+
+```
+bus2 (USB-A)   PORTSC=0x00001000   PP=1, CCS=0, LineState=00   <- SE0, no device
+bus3 (radio)   PORTSC=0x00001005   PP=1, CCS=1, PED=1
+```
+
+Unchanged through a forced port reset and an EHCI→OHCI handoff, with nothing whatsoever in `dmesg`.
+
+**PL3 gates that port's VBUS**, and mainline does not merely fail to drive it — the stock NanoPi K1
+Plus device tree actively claims PL3 as a gpio-keys button:
+
+```
+r-gpio-keys { compatible = "gpio-keys";
+    sw4 { label = "sw4"; linux,code = <0x100>; gpios = <&r_pio 0 3 1>; }; };
+```
+
+So the pin is held as an ACTIVE_LOW **input**, the port gets no 5 V, the device never powers up, it
+never pulls D+ high, and the host sits at SE0 forever. There is no such button on this board.
+
+The fix is [`overlays/sun50i-h5-vektor-usb-a-vbus.dts`](overlays/sun50i-h5-vektor-usb-a-vbus.dts) —
+disable the phantom key, and hand PL3 to a `regulator-fixed` wired to `usb1_vbus-supply`. Note the
+numbering: the USB-A port is ehci1 / phy 1, so it is `usb1_vbus-supply`; ports 2 and 3 are the
+soldered radios.
+
+With it applied, from a cold boot and no manual intervention:
+
+```
+[    2.002496] usb 2-1: new high-speed USB device number 2 using ehci-platform
+[    2.151826] usb 2-1: Product: Dual Drive
+[    2.151837] usb 2-1: Manufacturer: SanDisk
+[    3.168421] scsi 0:0:0:0: Direct-Access     SanDisk  Dual Drive
+```
+
+### Why this one was hard, and the technique that cracked it
+
+It is the same class of fault as the radios, but it defeats every static comparison. **PL3 appears in
+no source you can read.** Not the vendor's 4.19 device tree, not its U-Boot, not its U-Boot DTB, not
+its `rc.local`. The pin is driven high from userspace, so it exists only in the *running* system.
+
+What found it was booting the original firmware **alongside** the current one and diffing live state.
+The harvested vendor eMMC image was written to a microSD together with the vendor's own U-Boot SPL at
+the 8 KiB offset — the boot ROM tries SD before eMMC, so the original system boots with the eMMC
+untouched, and pulling the card reverts. Then `/sys/kernel/debug/gpio` on each:
+
+| | vendor (works) | mainline (dead) |
+|---|---|---|
+| PL3 | `gpio-355 ( \|sysfs ) out hi` | `line 3: input active-low consumer=sw4` |
+
+One line of difference, and it is only visible at runtime.
+
+The generalisation is worth more than the fix: **when a peripheral works on the vendor kernel and not
+on mainline, diff the running GPIO tables, not the device trees.** A vendor that configures a pin from
+userspace leaves no trace in anything you can grep.
+
+---
+
 ## Make it permanent: install to eMMC (destructive)
 
 Everything above is reversible by removing the card. **This step is not.** It overwrites the vendor's
@@ -701,7 +761,7 @@ toggle the suspected GPIO and watch `lsusb`.
 
 ## Status
 
-Working: gigabit Ethernet, eMMC, microSD, SPI NOR, USB-A, serial console, both Wi-Fi radios
+Working: gigabit Ethernet, eMMC, microSD, SPI NOR, the USB-A host port, serial console, both Wi-Fi radios
 (2.4 GHz MT7601U, dual-band RTL8812BU), the front-panel RGB LED, the AT24C04 EEPROM, CPU frequency
 scaling with working thermal throttling, and a U-Boot fallback in SPI NOR.
 

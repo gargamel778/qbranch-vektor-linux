@@ -1,0 +1,70 @@
+/*
+ * Q-Branch Labs Vektor: power the external USB-A host port.
+ *
+ * The USB-A port's VBUS is gated by PL3. Mainline does not merely fail to drive
+ * it -- the stock NanoPi K1 Plus device tree actively claims PL3 as a gpio-keys
+ * button:
+ *
+ *   r-gpio-keys { compatible = "gpio-keys";
+ *       sw4 { label = "sw4"; linux,code = <0x100>; gpios = <&r_pio 0 3 1>; }; };
+ *
+ * so the pin is held as an ACTIVE_LOW input and the port never receives 5 V.
+ * There is no such button on this board. A device plugged in is unpowered, so it
+ * never pulls D+ high: the controller reports PORTSC CCS=0 with LineState=00
+ * (SE0) and logs nothing at all, through a forced port reset and an EHCI->OHCI
+ * handoff alike.
+ *
+ * This is invisible to every static source. The vendor's 4.19 kernel device tree
+ * does not mention PL3, nor does its U-Boot, nor its U-Boot DTB, nor rc.local --
+ * the pin is driven high from userspace, so it appears only in the *running*
+ * system's /sys/kernel/debug/gpio:
+ *
+ *   vendor (works):    gpio-355 ( |sysfs ) out hi        <- PL3
+ *   mainline (dead):   line 3: input active-low consumer=sw4
+ *
+ * Proven on hardware: with gpio-keys unbound and PL3 driven high, a SanDisk
+ * flash drive enumerates on 1c1b000.usb within a second and attaches as sda.
+ *
+ * Note the port numbering: the USB-A port is ehci1 / phy 1, so the supply
+ * property is usb1_vbus-supply. Ports 2 and 3 are the soldered radios, handled
+ * by sun50i-h5-vektor-radio-vbus.dts.
+ *
+ * Build:   dtc -@ -I dts -O dtb -o sun50i-h5-vektor-usb-a-vbus.dtbo sun50i-h5-vektor-usb-a-vbus.dts
+ * Install: copy the .dtbo to /boot/overlay-user/ and add to user_overlays= in
+ *          /boot/armbianEnv.txt.
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	/* Release PL3. sw4 is its only child, and no such button exists here. */
+	fragment@0 {
+		target-path = "/r-gpio-keys";
+		__overlay__ {
+			status = "disabled";
+		};
+	};
+
+	fragment@1 {
+		target-path = "/";
+		__overlay__ {
+			reg_vektor_usb_a: vektor-usb-a-vbus {
+				compatible = "regulator-fixed";
+				regulator-name = "vektor-usb-a-vbus";
+				regulator-min-microvolt = <5000000>;
+				regulator-max-microvolt = <5000000>;
+				regulator-always-on;
+				enable-active-high;
+				gpio = <&r_pio 0 3 0>;	/* PL3, USB-A VBUS enable */
+			};
+		};
+	};
+
+	fragment@2 {
+		target = <&usbphy>;
+		__overlay__ {
+			usb1_vbus-supply = <&reg_vektor_usb_a>;
+		};
+	};
+};
