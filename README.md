@@ -42,7 +42,7 @@ The fix is a device-tree overlay: [`overlays/sun50i-h5-vektor-radio-vbus.dts`](o
 
 ---
 
-## Try it without touching your unit
+## Try it without reflashing your unit (reversible)
 
 This is the safest thing in this repository, and it is worth doing before anything else: **writing
 the SD card changes nothing on the appliance.**
@@ -216,6 +216,142 @@ for confirming the diagnosis in thirty seconds before you commit to anything: ru
 [`overlays/sun50i-h5-vektor-radio-power.dts`](overlays/sun50i-h5-vektor-radio-power.dts) is the same
 fix as a `gpio-hog`. It works, but `regulator-fixed` wired to `&usbphy` is the mainline sunxi idiom
 (`gpio-hog` appears zero times in all 293 Allwinner device tree files), so prefer the vbus overlay.
+
+---
+
+## Make it permanent: install to eMMC (destructive)
+
+Everything above is reversible by removing the card. **This step is not.** It overwrites the vendor's
+root filesystem on the eMMC, and the vendor system is then gone unless you imaged it first.
+
+Do the SD section first and get the radios working there. The eMMC install copies your running
+system, so a card you have already fixed and configured is what lands on the eMMC.
+
+### 1. Back up the vendor system — this is the only way back
+
+Take these while booted from the SD card. You cannot cleanly image a disk you are rooted on, which is
+why this step lives here and not earlier.
+
+Confirm your device numbering first. On this unit `mmcblk2` is the 7.3 GB eMMC and `mmcblk0` is the
+SD, but do not assume that — check the sizes:
+
+```bash
+lsblk -o NAME,SIZE,TYPE,FSTYPE,LABEL,MOUNTPOINTS
+```
+
+Then image both media to the SD card (or over the network — the eMMC is larger than a small card):
+
+```bash
+# the vendor rootfs, 7.3 GB raw; it compresses well since most of it is empty
+sudo dd if=/dev/mmcblk2 bs=4M status=progress | xz -T0 -2 > vendor-emmc.img.xz
+
+# the SPI NOR, 8 MB. NOT optional - see below
+sudo dd if=/dev/mtd0 of=vendor-spi-8MB.bin bs=64k status=progress
+
+sha256sum vendor-emmc.img.xz vendor-spi-8MB.bin | tee vendor-backup.sha256
+```
+
+The SPI NOR image is not optional. On a stock unit the eMMC is **not** bootable by the boot ROM at
+all — its 8 KiB BROM entry is zeroed and both eMMC hardware boot partitions are disabled
+(`PARTITION_CONFIG: 0x00`). The vendor's U-Boot lives in SPI NOR, and it is the only bootable medium
+the appliance ships with. Lose it without a copy and you have lost the original boot chain.
+
+> **Treat your eMMC image as a secret.** It is the vendor's provisioning state for *your* unit — it
+> contains the device's identity and key material. Keep it offline. Do not put it in a repository,
+> and do not send it to anyone, including as a "here's my backup" attachment on an issue.
+
+### 2. Install to the eMMC
+
+Armbian ships the installer:
+
+```bash
+sudo armbian-install
+```
+
+It is a shim that forwards to `armbian-config --api module_partitioner`, which also takes arguments
+directly:
+
+```bash
+sudo armbian-install --target /dev/mmcblk2 --boot emmc --fs ext4 --yes
+```
+
+### 3. Put a bootloader on the eMMC
+
+Because the vendor left the eMMC unbootable by the BROM, an eMMC install has to write U-Boot to the
+user area at the 8 KiB offset. The installer does this, but verify it rather than assume:
+
+```bash
+UB=/usr/lib/linux-u-boot-current-nanopik1plus/u-boot-sunxi-with-spl.bin
+sudo dd if="$UB" of=/dev/mmcblk2 bs=1024 seek=8 conv=fsync status=progress
+
+# read it straight back and compare byte-for-byte
+S=$(stat -c%s "$UB")
+sudo dd if=/dev/mmcblk2 bs=512 skip=16 count=$(( (S+511)/512 )) status=none \
+  | head -c "$S" | sha256sum
+sha256sum "$UB"
+```
+
+`seek=8` with `bs=1024` is the 8 KiB offset the boot ROM looks at. The hardware boot partitions stay
+disabled; nothing needs to change there.
+
+### 4. Stop the SD card outranking the eMMC
+
+The boot ROM tries SD **before** eMMC, so as long as the card carries a bootloader it wins — and you
+would still be booting from the card while believing you had migrated. Erase its bootloader region,
+keeping a copy first:
+
+```bash
+sudo dd if=/dev/mmcblk0 of=sd-first-1MiB.bin bs=1M count=1        # keep this
+sudo dd if=/dev/zero of=/dev/mmcblk0 bs=1M count=1 conv=fsync
+sudo dd if=/dev/mmcblk0 bs=1 skip=8196 count=8 | od -c            # must be all \0
+```
+
+After a reboot U-Boot should report `Trying to boot from MMC2`.
+
+### 5. Reuse the card for data
+
+```
+UUID=<your-uuid>  /data  ext4  defaults,noatime,nofail,x-systemd.device-timeout=10  0 2
+```
+
+`nofail` and the device timeout matter: without them a card that is missing, dead or slow to enumerate
+blocks boot on a headless box.
+
+### Reverting
+
+```bash
+xzcat vendor-emmc.img.xz | sudo dd of=/dev/mmcblk2 bs=4M conv=fsync status=progress
+sudo flash_erase /dev/mtd0 0 0
+sudo flashcp -v vendor-spi-8MB.bin /dev/mtd0
+```
+
+**Not tested here** — this unit has not been reverted, so unlike everything else in this repository
+these two commands are reasoned rather than demonstrated. They are the inverse of the writes that
+*were* performed, and all three `mtd` nodes are writable (`flags=0xc00`), but treat them as a plan
+rather than a proven recipe. The backups themselves are the part that matters; verify their
+checksums when you take them, because that is what you cannot redo later.
+
+### Keeping U-Boot current
+
+The `linux-u-boot-current-nanopik1plus` package ships the binary; nothing writes it to your boot
+medium automatically. So an `apt upgrade` can leave the package newer than what is actually booting
+you, silently and indefinitely.
+
+A worked example from this board: the eMMC was written from the U-Boot bundled in the 26.8.1 image
+(built Aug 09 2026, patch hash `P5dee`), and the SPI NOR was flashed later, after an upgrade had
+pulled package 26.8.3 (Aug 17 2026, `P9bd1`). The fallback ended up **newer than the primary**. Check
+what you are actually running against what is installed:
+
+```bash
+UB=/usr/lib/linux-u-boot-current-nanopik1plus/u-boot-sunxi-with-spl.bin
+strings "$UB" | grep -m1 'U-Boot 20'                                        # the package
+sudo dd if=/dev/mmcblk2 bs=512 skip=16 count=2000 status=none | strings | grep -m1 'U-Boot 20'   # eMMC
+sudo dd if=/dev/mtd0 bs=512 count=2000 status=none | strings | grep -m1 'U-Boot 20'              # SPI NOR
+```
+
+If they differ and you want them aligned, rewrite with the step 3 command (eMMC) or the SPI NOR
+section below. Do the SPI NOR one first: it is last in the boot order, so a bad write there cannot
+stop the board booting, which makes it the safe one to practise on.
 
 ---
 
